@@ -178,9 +178,12 @@ class DiscreteMetaAction(ActionType):
     def vehicle_class(self) -> Callable:
         return MDPVehicle
 
-    def act(self, action: int) -> None:
-        self.env.vehicle.act(self.actions[action])
-
+    def act(self, action) -> None:
+        if self.env.vehicle is not None:
+            self.env.vehicle.act(self.actions[action])
+        else: #it is multi-agent
+            for v, a in zip(self.env.controlled_vehicles, action):
+                v.act(self.actions[a])
 
 def action_factory(env: 'AbstractEnv', config: dict) -> ActionType:
     if config["type"] == "ContinuousAction":

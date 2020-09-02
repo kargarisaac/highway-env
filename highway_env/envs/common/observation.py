@@ -164,24 +164,38 @@ class KinematicObservation(ObservationType):
                     df[feature] = np.clip(df[feature], -1, 1)
         return df
 
-    def observe(self) -> np.ndarray:
+    def observe(self, vehicle=None) -> np.ndarray:
         if not self.env.road:
             return np.zeros(self.space().shape)
 
-        # Add ego-vehicle
-        df = pd.DataFrame.from_records([self.env.vehicle.to_dict()])[self.features]
-        # Add nearby traffic
-        # sort = self.order == "sorted"
-        close_vehicles = self.env.road.close_vehicles_to(self.env.vehicle,
+        if self.env.vehicle is not None:
+            # Add ego-vehicle
+            df = pd.DataFrame.from_records([self.env.vehicle.to_dict()])[self.features]
+             # Add nearby traffic
+            # sort = self.order == "sorted"
+            close_vehicles = self.env.road.close_vehicles_to(self.env.vehicle,
                                                          self.env.PERCEPTION_DISTANCE,
                                                          count=self.vehicles_count - 1,
                                                          see_behind=self.see_behind)
-        if close_vehicles:
-            origin = self.env.vehicle if not self.absolute else None
-            df = df.append(pd.DataFrame.from_records(
-                [v.to_dict(origin, observe_intentions=self.observe_intentions)
-                 for v in close_vehicles[-self.vehicles_count + 1:]])[self.features],
-                           ignore_index=True)
+            if close_vehicles:
+                origin = self.env.vehicle if not self.absolute else None
+                df = df.append(pd.DataFrame.from_records(
+                    [v.to_dict(origin, observe_intentions=self.observe_intentions)
+                    for v in close_vehicles[-self.vehicles_count + 1:]])[self.features],
+                               ignore_index=True)
+        # Normalize and clip                
+        else:
+            df = pd.DataFrame.from_records([vehicle.to_dict()])[self.features]            
+            close_vehicles = self.env.road.close_vehicles_to(vehicle,
+                                                         self.env.PERCEPTION_DISTANCE,
+                                                         count=self.vehicles_count - 1,
+                                                         see_behind=self.see_behind)
+            if close_vehicles:
+                origin = vehicle if not self.absolute else None
+                df = df.append(pd.DataFrame.from_records(
+                    [v.to_dict(origin, observe_intentions=self.observe_intentions)
+                    for v in close_vehicles[-self.vehicles_count + 1:]])[self.features],
+                               ignore_index=True)
         # Normalize and clip
         if self.normalize:
             df = self.normalize_obs(df)
@@ -248,35 +262,59 @@ class OccupancyGridObservation(ObservationType):
                 df[feature] = utils.lmap(df[feature], [f_range[0], f_range[1]], [-1, 1])
         return df
 
-    def observe(self) -> np.ndarray:
+    def observe(self, vehicle=None) -> np.ndarray:
         if not self.env.road:
             return np.zeros(self.space().shape)
 
         if self.absolute:
             raise NotImplementedError()
         else:
-            # Add nearby traffic
-            self.grid.fill(0)
-            df = pd.DataFrame.from_records(
-                [v.to_dict(self.env.vehicle) for v in self.env.road.vehicles])
-            # Normalize
-            df = self.normalize(df)
-            # Fill-in features
-            for layer, feature in enumerate(self.features):
-                for _, vehicle in df.iterrows():
-                    x, y = vehicle["x"], vehicle["y"]
-                    # Recover unnormalized coordinates for cell index
-                    if "x" in self.features_range:
-                        x = utils.lmap(x, [-1, 1], [self.features_range["x"][0], self.features_range["x"][1]])
-                    if "y" in self.features_range:
-                        y = utils.lmap(y, [-1, 1], [self.features_range["y"][0], self.features_range["y"][1]])
-                    cell = (int((x - self.grid_size[0, 0]) / self.grid_step[0]),
-                            int((y - self.grid_size[1, 0]) / self.grid_step[1]))
-                    if 0 <= cell[1] < self.grid.shape[-2] and 0 <= cell[0] < self.grid.shape[-1]:
-                        self.grid[layer, cell[1], cell[0]] = vehicle[feature]
-            # Clip
-            obs = np.clip(self.grid, -1, 1)
-            return obs
+            if self.env.vehicle is not None:
+                # Add nearby traffic
+                self.grid.fill(0)
+                df = pd.DataFrame.from_records(
+                    [v.to_dict(self.env.vehicle) for v in self.env.road.vehicles])
+                # Normalize
+                df = self.normalize(df)
+                # Fill-in features
+                for layer, feature in enumerate(self.features):
+                    for _, vehicle in df.iterrows():
+                        x, y = vehicle["x"], vehicle["y"]
+                        # Recover unnormalized coordinates for cell index
+                        if "x" in self.features_range:
+                            x = utils.lmap(x, [-1, 1], [self.features_range["x"][0], self.features_range["x"][1]])
+                        if "y" in self.features_range:
+                            y = utils.lmap(y, [-1, 1], [self.features_range["y"][0], self.features_range["y"][1]])
+                        cell = (int((x - self.grid_size[0, 0]) / self.grid_step[0]),
+                                int((y - self.grid_size[1, 0]) / self.grid_step[1]))
+                        if 0 <= cell[1] < self.grid.shape[-2] and 0 <= cell[0] < self.grid.shape[-1]:
+                            self.grid[layer, cell[1], cell[0]] = vehicle[feature]
+                # Clip
+                obs = np.clip(self.grid, -1, 1)
+                return obs
+            else: #multi-agent
+                # Add nearby traffic
+                self.grid.fill(0)
+                df = pd.DataFrame.from_records(
+                    [v.to_dict(vehicle) for v in self.env.road.vehicles])
+                # Normalize
+                df = self.normalize(df)
+                # Fill-in features
+                for layer, feature in enumerate(self.features):
+                    for _, vehicle in df.iterrows():
+                        x, y = vehicle["x"], vehicle["y"]
+                        # Recover unnormalized coordinates for cell index
+                        if "x" in self.features_range:
+                            x = utils.lmap(x, [-1, 1], [self.features_range["x"][0], self.features_range["x"][1]])
+                        if "y" in self.features_range:
+                            y = utils.lmap(y, [-1, 1], [self.features_range["y"][0], self.features_range["y"][1]])
+                        cell = (int((x - self.grid_size[0, 0]) / self.grid_step[0]),
+                                int((y - self.grid_size[1, 0]) / self.grid_step[1]))
+                        if 0 <= cell[1] < self.grid.shape[-2] and 0 <= cell[0] < self.grid.shape[-1]:
+                            self.grid[layer, cell[1], cell[0]] = vehicle[feature]
+                # Clip
+                obs = np.clip(self.grid, -1, 1)
+                return obs
 
 
 class KinematicsGoalObservation(KinematicObservation):

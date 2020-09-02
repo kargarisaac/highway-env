@@ -229,6 +229,7 @@ class IntersectionEnv(AbstractEnv):
         return float(self.vehicle.crashed)
 
 
+
 register(
     id='intersection-v0',
     entry_point='highway_env.envs:IntersectionEnv',

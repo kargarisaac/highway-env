@@ -8,19 +8,19 @@ import highway_env
 cfg = {
     "environment": "intersection-v0",
     "--processes": 1,
-    "--steps": 1e5,
+    "--steps": 10e4,
     "--n_steps": 128,
     "--learning_rate": 0.5e-3,
     "--batch_size": 64,
-    "--train": False,
+    "--train": True,
     "--test": False
 }
 
 if __name__ == '__main__':
+    # Multiprocess environment
+    env = SubprocVecEnv([lambda: gym.make(cfg["environment"]) for i in range(int(cfg["--processes"]))])
 
     if cfg["--train"]:
-        # Multiprocess environment
-        env = SubprocVecEnv([lambda: gym.make(cfg["environment"]) for i in range(int(cfg["--processes"]))])
         policy_kwargs = {}
         model = DQN(DQNMlp, env,
                     verbose=1,
@@ -31,17 +31,3 @@ if __name__ == '__main__':
                     tensorboard_log="./logs/")
         model.learn(total_timesteps=int(cfg["--steps"]))
         model.save("deepq_intersection")
-    else:
-        env = gym.make(cfg["environment"])
-        model = DQN.load("deepq_intersection")
-        obs = env.reset()
-        episode_r = 0
-        while True:
-            action, _states = model.predict(obs)
-            obs, rewards, dones, info = env.step(action)
-            episode_r += rewards
-            env.render()
-            if dones:
-                print("episode reward: ", episode_r)
-                obs, episode_r = env.reset(), 0
-

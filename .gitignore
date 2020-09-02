@@ -19,3 +19,9 @@ _build
 
 # Outputs
 **/out/*
+
+# folders
+data/
+.vscode/
+logs/
+wandb/
