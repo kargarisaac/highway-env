@@ -38,8 +38,8 @@ config = {
     ## for example --> unprotected left turn scenario: n_learning_agents = 2,  "start_positions": [0, 2] , "end_positions": [1, 0]  
     "auto_select_starts_ends": True,
     ## if you don't wnat any other random vehicle, set the followings to zero
-    "initial_vehicle_count": 0, 
-    "spawn_probability": 0.0
+    "initial_vehicle_count": 10, 
+    "spawn_probability": 0.6
 }
 env = MAIntersectionEnv(config=config)
 
