@@ -16,9 +16,9 @@ import random
 import os
 import datetime
 
-from highway_env.envs.intersection_env import IntersectionEnv
+from highway_env.envs.intersection_env import MultiAgentIntersectionEnv
 
-from models import MultiLayerPerceptron, DuelingNetwork, ConvolutionalNetwork, EgoAttentionNetwork
+from models import EgoAttentionNetwork
 
 
 if __name__ == "__main__":
@@ -40,7 +40,7 @@ if __name__ == "__main__":
                         help='if toggled, cuda will not be enabled by default')
     parser.add_argument('--prod-mode', type=lambda x:bool(strtobool(x)), default=True, nargs='?', const=True,
                         help='run the script in production mode and use wandb to log outputs')
-    parser.add_argument('--capture-video', type=lambda x:bool(strtobool(x)), default=True, nargs='?', const=True,
+    parser.add_argument('--capture-video', type=lambda x:bool(strtobool(x)), default=False, nargs='?', const=True,
                         help='weather to capture videos of the agent performances (check out `videos` folder)')
     parser.add_argument('--wandb-project-name', type=str, default="highway-env",
                         help="the wandb's project name")
@@ -96,33 +96,19 @@ class ProcessObsInputEnv(gym.ObservationWrapper):
         return obs
 
 
-class ObsWrapper(gym.ObservationWrapper):
-    def __init__(self, env):
-        super().__init__(env)
-        self.observation_space = gym.spaces.Box(
-            env.observation_space[0].low[0][0],
-            env.observation_space[0].high[0][0],
-            (np.array(env.observation_space[0].shape).prod(), ))
-        self.action_space = env.action_space[0]
-
-    # def observation(self, obs):
-    #     # obs is a list of obs vectors for all agents in one env -> concatenate them
-    #     new_obs = obs.flatten()
-    #     return new_obs
-
-
 # TRY NOT TO MODIFY: setup the environment
 TRAIN = True
 
 yyyymmdd = datetime.datetime.today().strftime("%Y_%m_%d")
-exp_name = f"Intersection_{args.exp_name}_{args.seed}_"+str(datetime.datetime.today()).split(' ')[1].split('.')[0]
+exp_name = f"MAIntersection_{args.exp_name}_{args.seed}_"+str(datetime.datetime.today()).split(' ')[1].split('.')[0]
 experiment_name = os.path.join(yyyymmdd, exp_name)
 data_path = os.path.join('data', experiment_name)
 models_path = f"{data_path}/models"
 
-writer = SummaryWriter(f"{data_path}/logs")
-writer.add_text('hyperparameters', "|param|value|\n|-|-|\n%s" % (
-        '\n'.join([f"|{key}|{value}|" for key, value in vars(args).items()])))
+if TRAIN:
+    writer = SummaryWriter(f"{data_path}/logs")
+    writer.add_text('hyperparameters', "|param|value|\n|-|-|\n%s" % (
+            '\n'.join([f"|{key}|{value}|" for key, value in vars(args).items()])))
 if args.prod_mode and TRAIN:
     import wandb
     wandb.init(project=args.wandb_project_name, entity=args.wandb_entity, sync_tensorboard=True, config=vars(args), name=exp_name, monitor_gym=True, save_code=True)
@@ -132,14 +118,43 @@ if args.prod_mode and TRAIN:
 # TRY NOT TO MODIFY: seeding
 device = torch.device('cuda' if torch.cuda.is_available() and args.cuda else 'cpu')
 
+
+env_config = {
+    "id": "intersection-multi-agent-v0",
+    "action": {
+        "type": "MultiAgentAction",
+        "action_config": {
+            "type": "DiscreteMetaAction",
+            "lateral": False,
+            "longitudinal": True
+        }
+    },
+    "observation": {
+        "type": "MultiAgentObservation",
+        "observation_config": {
+            "type": "Kinematics",
+            "vehicles_count": 15,
+            "features": ["presence", "x", "y", "vx", "vy", "cos_h", "sin_h"],
+            "features_range": {
+                "x": [-100, 100],
+                "y": [-100, 100],
+                "vx": [-20, 20],
+                "vy": [-20, 20]
+            },
+            "absolute": True,
+            "order": "shuffled"
+        },
+    },
+    "controlled_vehicles": 2
+}
+
+
 # env = gym.make(args.gym_id)
-env = IntersectionEnv()
+env = MultiAgentIntersectionEnv(env_config)
 env.config['offscreen_rendering'] = True if TRAIN else False 
 # env.config["screen_width"] = 1000
 # env.config["screen_height"] = 1000
 # env.config["duration"] = 300
-
-# env = ObsWrapper(env)
 
 random.seed(args.seed)
 np.random.seed(args.seed)
@@ -177,47 +192,73 @@ class ReplayBuffer():
                np.array(r_lst), np.array(s_prime_lst), \
                np.array(done_mask_lst)
 
-# ALGO LOGIC: initialize agent here:
-class QNetwork(nn.Module):
-    def __init__(self, input_size, output_size):
-        super(QNetwork, self).__init__()
-        self.fc1 = nn.Linear(input_size, 64)
-        self.fc2 = nn.Linear(64, 64)
-        self.fc3 = nn.Linear(64, output_size)
-
-    def forward(self, x):
-        x = x.reshape(x.shape[0], -1)
-        x = torch.Tensor(x).to(device)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
 
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     slope =  (end_e - start_e) / duration
     return max(slope * t + start_e, end_e)
 
 
-rb = ReplayBuffer(args.buffer_size)
 
-input_size = np.array(env.observation_space.shape).prod()
-output_size = env.action_space.n
+input_size = np.array(env.observation_space[0].shape).prod()
+output_size = env.action_space[0].n
 
-q_network = QNetwork(input_size, output_size).to(device)
-target_network = QNetwork(input_size, output_size).to(device)
-target_network.load_state_dict(q_network.state_dict())
+model_config = {
+    "type": "EgoAttentionNetwork",
+    "feature_size": 64,
+    "embedding_layer": {
+        "type": "MultiLayerPerceptron",
+        "layers": [64, 64],
+        "reshape": False,
+        "in": 7
+    },
+    "others_embedding_layer": {
+        "type": "MultiLayerPerceptron",
+        "layers": [64, 64],
+        "reshape": False,
+        "in": 7
+    },
+    "self_attention_layer": None,
+    "attention_layer": {
+        "type": "EgoAttention",
+        "feature_size": 64,
+        "heads": 2
+    },
+    "output_layer": {
+        "type": "MultiLayerPerceptron",
+        "layers": [64, 64],
+        "reshape": False,
+    },
+    # "heads": 2,
+    # "dropout_factor": 0
+    "out": output_size
+    
+}
 
-optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
+rbs = []
+q_networks = []
+target_networks = []
+optimizers = []
+for n in range(env_config["controlled_vehicles"]):
+    rbs.append(ReplayBuffer(args.buffer_size))
+
+    q_network = EgoAttentionNetwork(model_config).to(device)
+    target_network = EgoAttentionNetwork(model_config).to(device)
+    target_network.load_state_dict(q_network.state_dict())
+
+    q_networks.append(q_network)
+    target_networks.append(target_network)
+
+    optimizers.append(optim.Adam(q_network.parameters(), lr=args.learning_rate))
 
 loss_fn = nn.MSELoss()
 
 print(device.__repr__())
-print(q_network)
+print(q_networks[0])
 
-if not os.path.exists(models_path):
-    os.mkdir(models_path)
 
 if TRAIN:
+    if not os.path.exists(models_path):
+        os.mkdir(models_path)
     # TRY NOT TO MODIFY: start the game
     obs = env.reset()
     episode_reward = 0
@@ -229,54 +270,61 @@ if TRAIN:
         eps_duration = args.exploration_fraction*args.total_timesteps
         # eps_duration = 2000
         epsilon = linear_schedule(args.start_e, args.end_e, eps_duration, global_step)
+        action = []
         if random.random() < epsilon:
-            action = env.action_space.sample()
+            for n in range(env_config["controlled_vehicles"]):
+                action.append(env.action_space[n].sample())
         else:
-            logits = q_network.forward(obs.reshape((1,)+obs.shape))
-            action = torch.argmax(logits, dim=1).tolist()[0]
+            for n in range(env_config["controlled_vehicles"]):
+                logits = q_networks[n].forward(obs[n].reshape((1,)+obs[n].shape))
+                action.append(torch.argmax(logits, dim=1).tolist()[0])
 
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, reward, done, _ = env.step(action)
         # env.render()
-        episode_reward += reward
+        episode_reward += sum(reward)
 
         # ALGO LOGIC: training.
         # put data collected with all agents into one common buffer
-        rb.put((obs, action, reward, next_obs, done))
+        for n in range(env_config["controlled_vehicles"]):
+            rbs[n].put((obs[n], action[n], reward[n], next_obs[n], done[n]))
 
         if global_step > args.learning_starts and global_step % args.train_frequency == 0:
-            s_obs, s_actions, s_rewards, s_next_obses, s_dones = rb.sample(args.batch_size)
-            with torch.no_grad():
-                target_max = torch.max(target_network.forward(s_next_obses), dim=1)[0]
-                td_target = torch.Tensor(s_rewards).to(device) + args.gamma * target_max * (1 - torch.Tensor(s_dones).to(device))
-            old_val = q_network.forward(s_obs).gather(1, torch.LongTensor(s_actions).view(-1,1).to(device)).squeeze()
-            loss = loss_fn(td_target, old_val)
+            for n in range(env_config["controlled_vehicles"]):
+                s_obs, s_actions, s_rewards, s_next_obses, s_dones = rbs[n].sample(args.batch_size)
+                with torch.no_grad():
+                    target_max = torch.max(target_networks[n].forward(s_next_obses), dim=1)[0]
+                    td_target = torch.Tensor(s_rewards).to(device) + args.gamma * target_max * (1 - torch.Tensor(s_dones).to(device))
+                old_val = q_networks[n].forward(s_obs).gather(1, torch.LongTensor(s_actions).view(-1,1).to(device)).squeeze()
+                loss = loss_fn(td_target, old_val)
 
-            if global_step % 100 == 0:
-                writer.add_scalar("losses/td_loss", loss, global_step)
+                if global_step % 100 == 0:
+                    writer.add_scalar("losses/td_loss_net_" + str(n), loss, global_step)
 
-            # optimize the midel
-            optimizer.zero_grad()
-            loss.backward()
-            nn.utils.clip_grad_norm_(list(q_network.parameters()), args.max_grad_norm)
-            optimizer.step()
+                # optimize the midel
+                optimizers[n].zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(list(q_networks[n].parameters()), args.max_grad_norm)
+                optimizers[n].step()
 
-            # save model each time
-            torch.save(q_network.state_dict(), models_path + "/q_network.pt")
+                # save model each time
+                torch.save(q_networks[n].state_dict(), models_path + "/q_network_" + str(n) + ".pt")
 
             # save best model    
             if episode_reward > best_reward:
                 best_reward = episode_reward
-                torch.save(q_network.state_dict(), models_path + "/q_network_best.pt")
+                for n in range(env_config["controlled_vehicles"]):
+                    torch.save(q_networks[n].state_dict(), models_path + "/q_network_" + str(n) + "_best.pt")
 
             # update the target network
             if global_step % args.target_network_frequency == 0:
-                target_network.load_state_dict(q_network.state_dict())
+                for n in range(env_config["controlled_vehicles"]):
+                    target_networks[n].load_state_dict(q_networks[n].state_dict())
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook 
         obs = next_obs
 
-        if done: #if one agent is done - reset env
+        if sum(done) > 0: #if one agent is done - reset env
             # TRY NOT TO MODIFY: record rewards for plotting purposes
             print(f"global_step={global_step}, episode_reward={episode_reward}")
             writer.add_scalar("charts/episode_reward", episode_reward, global_step)
@@ -291,23 +339,26 @@ else: #test
     obs = env.reset()
     episode_reward = 0
 
-    load_path = '/home/isaac/codes/autonomous_driving/highway-env/data/2020_08_30/Intersection_dqn_1_08:08:58/models'
-    q_network.load_state_dict(torch.load(load_path + "/q_network.pt"))
+    load_path = '/home/isaac/codes/autonomous_driving/highway-env/data/2020_08_30/MAIntersection_madqn_1_23:50:25/models'
+    for n in range(env_config["controlled_vehicles"]):
+        q_networks[n].load_state_dict(torch.load(load_path + "/q_network_" + str(n) + ".pt"))
 
     for _ in range(10):
         while True:
-            logits = q_network.forward(obs.reshape((1,)+obs.shape))
-            action = torch.argmax(logits, dim=1).tolist()[0]
+            action = []
+            for n in range(env_config["controlled_vehicles"]):
+                logits = q_networks[n].forward(obs[n].reshape((1,)+obs[n].shape))
+                action.append(torch.argmax(logits, dim=1).tolist()[0])
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, done, _ = env.step(action)
             env.render()
-            episode_reward += reward
+            episode_reward += sum(reward)
 
             # TRY NOT TO MODIFY: CRUCIAL step easy to overlook 
             obs = next_obs
 
-            if done: #if one agent is done - reset env
+            if sum(done) > 0: #if one agent is done - reset env
                 # TRY NOT TO MODIFY: record rewards for plotting purposes
                 print(f"episode_reward={episode_reward}")
                 obs, episode_reward = env.reset(), 0

@@ -18,7 +18,7 @@ import datetime
 
 from highway_env.envs.intersection_env import IntersectionEnv
 
-from models import MultiLayerPerceptron, DuelingNetwork, ConvolutionalNetwork, EgoAttentionNetwork
+from models import MultiLayerPerceptron, DuelingNetwork
 
 
 if __name__ == "__main__":
@@ -38,7 +38,7 @@ if __name__ == "__main__":
                         help='if toggled, `torch.backends.cudnn.deterministic=False`')
     parser.add_argument('--cuda', type=lambda x:bool(strtobool(x)), default=True, nargs='?', const=True,
                         help='if toggled, cuda will not be enabled by default')
-    parser.add_argument('--prod-mode', type=lambda x:bool(strtobool(x)), default=True, nargs='?', const=True,
+    parser.add_argument('--prod-mode', type=lambda x:bool(strtobool(x)), default=False, nargs='?', const=True,
                         help='run the script in production mode and use wandb to log outputs')
     parser.add_argument('--capture-video', type=lambda x:bool(strtobool(x)), default=True, nargs='?', const=True,
                         help='weather to capture videos of the agent performances (check out `videos` folder)')
@@ -128,12 +128,31 @@ if args.prod_mode and TRAIN:
     wandb.init(project=args.wandb_project_name, entity=args.wandb_entity, sync_tensorboard=True, config=vars(args), name=exp_name, monitor_gym=True, save_code=True)
     writer = SummaryWriter(f"/tmp/{exp_name}")
 
-
 # TRY NOT TO MODIFY: seeding
 device = torch.device('cuda' if torch.cuda.is_available() and args.cuda else 'cpu')
 
+##------------------- configs -------------------------
+env_config = {
+    "id": "intersection-v0",
+    "import_module": "highway_env",
+    "observation": {
+        "type": "Kinematics",
+        "vehicles_count": 15,
+        "features": ["presence", "x", "y", "vx", "vy", "cos_h", "sin_h"],
+        "features_range": {
+            "x": [-100, 100],
+            "y": [-100, 100],
+            "vx": [-20, 20],
+            "vy": [-20, 20]
+        },
+        "absolute": True,
+        "order": "shuffled"
+    },
+    "destination": "o1"
+}
+
 # env = gym.make(args.gym_id)
-env = IntersectionEnv()
+env = IntersectionEnv(env_config)
 env.config['offscreen_rendering'] = True if TRAIN else False 
 # env.config["screen_width"] = 1000
 # env.config["screen_height"] = 1000
@@ -177,21 +196,6 @@ class ReplayBuffer():
                np.array(r_lst), np.array(s_prime_lst), \
                np.array(done_mask_lst)
 
-# ALGO LOGIC: initialize agent here:
-class QNetwork(nn.Module):
-    def __init__(self, input_size, output_size):
-        super(QNetwork, self).__init__()
-        self.fc1 = nn.Linear(input_size, 64)
-        self.fc2 = nn.Linear(64, 64)
-        self.fc3 = nn.Linear(64, output_size)
-
-    def forward(self, x):
-        x = x.reshape(x.shape[0], -1)
-        x = torch.Tensor(x).to(device)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
 
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     slope =  (end_e - start_e) / duration
@@ -202,10 +206,20 @@ rb = ReplayBuffer(args.buffer_size)
 
 input_size = np.array(env.observation_space.shape).prod()
 output_size = env.action_space.n
+# q_network = QNetwork(input_size, output_size).to(device)
+# target_network = QNetwork(input_size, output_size).to(device)
+# target_network.load_state_dict(q_network.state_dict())
 
-q_network = QNetwork(input_size, output_size).to(device)
-target_network = QNetwork(input_size, output_size).to(device)
+model_config = {
+    "layers": [128, 128],
+    "in": input_size,
+    "out": output_size
+}
+
+q_network = MultiLayerPerceptron(model_config).to(device)
+target_network = MultiLayerPerceptron(model_config).to(device)
 target_network.load_state_dict(q_network.state_dict())
+
 
 optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
 

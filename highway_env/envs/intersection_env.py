@@ -272,6 +272,32 @@ class MultiAgentIntersectionEnv(IntersectionEnv):
                 if v is not ego_vehicle and np.linalg.norm(v.position - ego_vehicle.position) < 20:
                     self.road.vehicles.remove(v)
 
+    # def _reward(self, action: int) -> float:
+    #     reward = []
+    #     for v in self.controlled_vehicles:
+    #         r = self.config["collision_reward"] * v.crashed \
+    #                 + self.HIGH_SPEED_REWARD * (v.speed_index == v.SPEED_COUNT - 1)
+    #         reward = self.ARRIVED_REWARD if self.has_arrived else reward
+    #         if self.config["normalize_reward"]:
+    #             reward = utils.lmap(reward, [self.config["collision_reward"], self.ARRIVED_REWARD], [0, 1])
+    #     return reward
+
+    # def _is_terminal(self) -> bool:
+    #     """The episode is over when a collision occurs or when the access ramp has been passed."""
+    #     return self.vehicle.crashed \
+    #         or self.steps >= self.config["duration"] * self.config["policy_frequency"] \
+    #         or self.has_arrived
+
+    # def has_arrived(self, vehicle, exit_distance=25) -> bool:
+    #     return "il" in vehicle.lane_index[0] \
+    #            and "o" in vehicle.lane_index[1] \
+    #            and vehicle.lane.local_coordinates(vehicle.position)[0] >= exit_distance
+
+    # def _cost(self, action: int) -> List[float]:
+    #     """The constraint signal is the occurrence of collisions."""
+    #     return [float(v.crashed) for v in self.controlled_vehicles]
+
+
 register(
     id='intersection-v0',
     entry_point='highway_env.envs:IntersectionEnv',
